@@ -9,7 +9,7 @@
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "ppmanalyzer.skel.h"
-
+#define MAX_CHRS 512
 typedef struct
 {
     __u32 event_id;
@@ -37,9 +37,45 @@ static int libbpf__print_fn(enum libbpf_print_level level, const char *format, v
     return vfprintf(stderr,format, args);
 }
 
-void detect_processes()
+int detect_processes()
 {
-
+    DIR * proc_dir;
+    struct dirent *proc_dir_entry;
+    proc_dir = opendir("/proc");
+    if(proc_dir == NULL)
+    {
+        perror("Cannot open proc dir\n");
+        return 1;
+    }
+    while((proc_dir_entry = readdir(proc_dir)) != NULL)
+    {
+        if(proc_dir_entry->d_type == DT_DIR)
+        {
+            int pid = atoi(proc_dir_entry->d_name);
+            if(pid > 0)
+            {
+                char status_path[MAX_CHRS];
+                char process_name[MAX_CHRS];
+                snprintf(status_path, sizeof(status_path),"/proc/%s/status",proc_dir_entry->d_name);
+                FILE *proc_status_file = fopen(status_path,"r");
+                if(proc_status_file != NULL)
+                {
+                    char line[256];
+                    while(fgets(line,sizeof(line),proc_status_file) !=NULL)
+                    {
+                        if(strncmp(line,"Name:",5) == 0)
+                        {
+                            sscanf(line,"Name:\t%s",process_name);
+                            printf("Pid: %d| Process Name: %s\n",pid,process_name);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    closedir(proc_dir);
+    return 0;
 }
 
 int main(int args, char **agrv)
@@ -48,11 +84,12 @@ int main(int args, char **agrv)
     struct perf_buffer *pb;
     signal(SIGINT,handle_signal);
     signal(SIGTERM,handle_signal);
-    int n_cpus = 4;// get_nprocs();
+    detect_processes();
     int err;
     libbpf_set_print(libbpf__print_fn);
     skel = ppmanalyzer_bpf__open_and_load();
-    bpf_map__set_max_entries(skel->maps.ppm_perf_events, n_cpus);
+    //int nprocs = get_nproc();
+    bpf_map__set_max_entries(skel->maps.ppm_perf_events, 4);
     if(!skel)
     {
         fprintf(stderr,"Failed to open ppmanalyzer BPF skeleton");
