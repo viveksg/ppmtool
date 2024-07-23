@@ -3,21 +3,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
-#define EVENT_NEW_PROCESS_CREATED 201
-#define EVENT_NEW_PACKET_DETECTED 202
-#define EVENT_NEW_PACKET_PORT_TCP 203
-#define ETHERNET_PAYLOAD_NOT_FOUND 100
-#define IP_PAYLOAD_NOT_FOUND 101
-#define TCP_PAYLOAD_NOT_FOUND 102
-#define UDP_PAYLOAD_NOT_FOUND 103
-#define PROTOCOL_NOT_IP 104
-#define PROTOCOL_NOT_TCP_OR_UDP 105
-#ifndef ETH_P_IP
-#define ETH_P_IP 0x0800
-#endif
-#define AF_INET 2
-#define AF_INET6 10
-#define MAX_STR_LEN 512
+#include "ppm_common.h"
 typedef struct
 {
     __u16 portId;
@@ -28,16 +14,9 @@ typedef struct
 typedef struct
 {
     __u32 pid;
-    __u32 array_index;
-} pid_index;
-
-
-typedef struct
-{
-    __u32 pid;
     char process_name[MAX_STR_LEN];
     __u32 total_packets;
-} array_data;
+} process_data;
 
 typedef struct
 {
@@ -58,7 +37,6 @@ static inline __u16 my_htons(__u16 hostshort)
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-
 struct
 {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
@@ -66,14 +44,28 @@ struct
     __uint(value_size, sizeof(u32));
 } ppm_perf_events SEC(".maps");
 
+struct
+{
+    __uint(type,BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(key_size,sizeof(u32));
+    __uint(value_size, sizeof(process_data));
+    __uint(max_entries,512);
+} process_map SEC(".maps");
+
 SEC("tracepoint/net/netif_receive_skb")
 int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
 {
     struct sk_buff skb;
+    struct sock *sk = NULL;
     struct iphdr ip_header;
     struct tcphdr tcp_header;
     perf_ppm_event ppm_event;
+    //struct task_struct  *task = NULL;
     bpf_probe_read(&skb, sizeof(skb), ctx->skbaddr);
+    sk = skb.sk;
+    if(!sk)
+        return 0; 
+    //bpf_probe_read(&task,sizeof(task),&sk->sk_socket->file->private_data);
     bpf_probe_read(&ip_header, sizeof(struct iphdr), skb.data);
     bpf_probe_read(&tcp_header, sizeof(struct tcphdr), skb.data + sizeof(struct iphdr));
     __u32 src_addr = ip_header.saddr;
@@ -85,6 +77,7 @@ int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
     ppm_event.port_id = dst_port;
     ppm_event.src_addr = src_addr;
     ppm_event.dst_addr = dst_addr;
+    //ppm_event.pid = task->pid;
     bpf_get_current_comm(&ppm_event.comm, sizeof(ppm_event.comm));
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
     // bpf_printk("tcp_header1: %d %d \n", tcp_header.source, tcp_header.dest);
@@ -105,9 +98,9 @@ int kprobe_tcp_v4_connect(struct pt_regs *ctx)
     ppm_event.event_id = EVENT_NEW_PACKET_PORT_TCP;
     ppm_event.pid = pid;
     __u16 dport = 0;
-    bpf_probe_read_kernel(&dport,sizeof(dport),&sk->__sk_common.skc_dport);
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
     ppm_event.port_id = my_htons(dport);
-    bpf_perf_event_output(ctx,&ppm_perf_events,BPF_F_CURRENT_CPU,&ppm_event,sizeof(ppm_event));
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
     return 0;
 }
 
@@ -116,10 +109,15 @@ int trace_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
     __u32 parent_id = ctx->parent_pid;
     __u32 child_id = ctx->child_pid;
+    process_data pdata;
+    pdata.total_packets = 0;
     bpf_printk("Parent pid: %d, child pid = %d", parent_id, child_id);
     perf_ppm_event ppm_event;
     ppm_event.event_id = EVENT_NEW_PROCESS_CREATED;
     ppm_event.pid = child_id;
-    bpf_perf_event_output(ctx,&ppm_perf_events,BPF_F_CURRENT_CPU,&ppm_event,sizeof(ppm_event));
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    //pdata.pid = child_id;
+    //bpf_get_current_comm(pdata.process_name,sizeof(pdata.process_name));
+    //bpf_map_update_elem(&process_map,&child_id,&pdata,BPF_ANY);
     return 0;
 }
