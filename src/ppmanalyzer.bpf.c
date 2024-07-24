@@ -56,34 +56,35 @@ SEC("tracepoint/net/netif_receive_skb")
 int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
 {
     struct sk_buff skb;
-    struct sock *sk = NULL;
+    struct sock sk;
     struct iphdr ip_header;
-    struct tcphdr tcp_header;
     perf_ppm_event ppm_event;
-    //struct task_struct  *task = NULL;
     bpf_probe_read(&skb, sizeof(skb), ctx->skbaddr);
-    sk = skb.sk;
-    if(!sk)
-        return 0; 
-    //bpf_probe_read(&task,sizeof(task),&sk->sk_socket->file->private_data);
     bpf_probe_read(&ip_header, sizeof(struct iphdr), skb.data);
-    bpf_probe_read(&tcp_header, sizeof(struct tcphdr), skb.data + sizeof(struct iphdr));
-    __u32 src_addr = ip_header.saddr;
-    __u32 dst_addr = ip_header.daddr;
-    __u16 src_port = my_htons(tcp_header.source);
-    __u16 dst_port = my_htons(tcp_header.dest);
+    ppm_event.src_addr = ip_header.saddr;
+    ppm_event.dst_addr = ip_header.daddr;
+    ppm_event.pid = bpf_get_current_pid_tgid() >> 32;
+    if(ip_header.protocol == IPPROTO_TCP)
+    {
+       struct tcphdr tcp_header;
+       bpf_probe_read(&tcp_header, sizeof(struct tcphdr), skb.data + sizeof(struct iphdr));
+       ppm_event.src_port_id =  my_htons(tcp_header.source);
+       ppm_event.port_id = my_htons(tcp_header.dest);
+    }
+    else if(ip_header.protocol == IPPROTO_UDP)
+    {
+       struct udphdr udp_header;
+       bpf_probe_read(&udp_header, sizeof(struct udphdr), skb.data + sizeof(struct iphdr));
+       ppm_event.src_port_id =  my_htons(udp_header.source);
+       ppm_event.port_id = my_htons(udp_header.dest);
+
+    }
     ppm_event.event_id = EVENT_NEW_PACKET_DETECTED;
-    ppm_event.src_port_id = src_port;
-    ppm_event.port_id = dst_port;
-    ppm_event.src_addr = src_addr;
-    ppm_event.dst_addr = dst_addr;
-    //ppm_event.pid = task->pid;
     bpf_get_current_comm(&ppm_event.comm, sizeof(ppm_event.comm));
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
-    // bpf_printk("tcp_header1: %d %d \n", tcp_header.source, tcp_header.dest);
-    // bpf_printk("Protocol: %x | Src Addr: %d.%d.%d.%d | Src Port: %d| Dst Addr: %d.%d.%d.%d| Dst Port: %d\n", ip_header.protocol, (src_addr) & 0xff, (src_addr >> 8) & 0xff, (src_addr >> 16) & 0xff, (src_addr >> 24) & 0xff, src_port, (dst_addr) & 0xff, (dst_addr >> 8) & 0xff, (dst_addr >> 16) & 0xff, (dst_addr >> 24) & 0xff, dst_port);
     return 0;
 }
+
 
 SEC("kprobe/tcp_v4_connect")
 int kprobe_tcp_v4_connect(struct pt_regs *ctx)
@@ -116,8 +117,5 @@ int trace_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
     ppm_event.event_id = EVENT_NEW_PROCESS_CREATED;
     ppm_event.pid = child_id;
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
-    //pdata.pid = child_id;
-    //bpf_get_current_comm(pdata.process_name,sizeof(pdata.process_name));
-    //bpf_map_update_elem(&process_map,&child_id,&pdata,BPF_ANY);
     return 0;
 }

@@ -7,13 +7,16 @@
 #include <string.h>
 #include <error.h>
 #include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <bpf/libbpf.h>
 #include "ppm_common.h"
 #include "ppmanalyzer.skel.h"
 #define MAX_STR_LEN 512
 #define MAX_CHRS MAX_STR_LEN
-#define MAX_PROCESSES 1<<16
-#define TOTAL_PORTS 1<<16
+#define MAX_PROCESSES 1 << 16
+#define TOTAL_PORTS 1 << 16
 typedef struct
 {
     __u32 event_id;
@@ -26,11 +29,6 @@ typedef struct
     char comm[16];
 } perf_ppm_event_user;
 
-typedef struct{
-    uint32_t process_id;
-    int count;
-}port_process_info;
-
 typedef struct
 {
     __u32 pid;
@@ -40,56 +38,82 @@ typedef struct
 
 process_info process_infos[MAX_PROCESSES];
 int process_counter = 0;
-port_process_info pp_info[TOTAL_PORTS];
 struct ppmanalyzer_bpf *skel;
 static volatile sig_atomic_t stop;
 
-void add_new_process(__u32 pid, __u32 total_packets, char pname[MAX_STR_LEN])
+void add_new_process(__u32 pid)
 {
-    if(process_counter == MAX_PROCESSES)
+    if (process_counter == MAX_PROCESSES)
     {
-        fprintf(stderr,"Process array full cannot add new process\n");
+        fprintf(stderr, "Process array full cannot add new process\n");
         return;
     }
     process_infos[process_counter].total_packets = 0;
     process_infos[process_counter].pid = pid;
-    memcpy(process_infos[process_counter].process_name,pname,MAX_STR_LEN); 
+    char proce_file_path[MAX_STR_LEN];
+    snprintf(proce_file_path, sizeof(proce_file_path), "/proc/%d/comm", pid);
+    int proc_file_fd = open(proce_file_path, O_RDONLY);
+    if (proc_file_fd < 0)
+    {
+        snprintf(process_infos[process_counter].process_name, MAX_STR_LEN, "unkown");
+        return ;
+    }
+    ssize_t read_bytes = read(proc_file_fd, process_infos[process_counter].process_name, MAX_STR_LEN);
+    if (read_bytes > 0)
+        process_infos[process_counter].process_name[read_bytes - 1] = '\0';
+    else
+    {
+
+        snprintf(process_infos[process_counter].process_name, MAX_STR_LEN, "unkown");
+        return ;
+    }
+
+   // printf("Process Created: %d,comm %s\n",process_infos[process_counter].pid,process_infos[process_counter].process_name);
     process_counter++;
 }
 
-void get_process_name_from_pid(int pid, char *name)
+int get_process_index(int pid)
 {
     int i = 0;
-    for(i = 0; i < process_counter; i++)
+    for (i = 0; i < process_counter; i++)
     {
-        if(pid == process_infos[process_counter].pid)
+        if (pid == process_infos[i].pid)
         {
-            memcpy(name,process_infos[i].process_name,sizeof(process_infos[i].process_name));
-            return;
+            return i;
         }
     }
-    fprintf(stderr,"Cannot with in entry for PID:%d in process array\n",pid);
+    fprintf(stderr, "Cannot with in entry for PID:%d in process array\n", pid);
+    return -1;
 }
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
     perf_ppm_event_user *event_data = data;
-    printf("EventId: %d| port_no: %d | pid : %d | packed_count %d \n", event_data->event_id, event_data->port_id, event_data->pid, event_data->packet_count);
-    
     int event_id = event_data->event_id;
-    char pname[MAX_STR_LEN];
+    __u32 src_addr = event_data->src_addr;
+    __u32 dest_addr = event_data->dst_addr;
+    __u16 src_port = event_data->src_port_id;
+    __u16 dest_port = event_data->dst_addr;
+    int process_index = 0;
+    //char pname[MAX_STR_LEN];
     switch (event_id)
     {
     case EVENT_NEW_PROCESS_CREATED:
-        memcpy(pname,event_data->comm,sizeof(event_data->comm));
-        add_new_process(event_data->pid,0,pname);
+        add_new_process(event_data->pid);
         break;
-    case EVENT_NEW_PACKET_PORT_TCP:
+    case EVENT_NEW_PACKET_DETECTED:
+        process_index =  get_process_index(event_data->pid);
+        process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
+        if(process_index > -1)
+            printf("Packet Detected- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
+        else
+            printf("Process not founf for pid: %d\n",event_data->pid);
+        printf(" Received Packet From: %d.%d.%d.%d:%d | ", (src_addr&0xff),(src_addr>>8)&0xff,(src_addr>>16)&0xff,(src_addr>>24)&0xff,src_port);
+        printf(" Received Packet At:   %d.%d.%d.%d:%d  \n ",(dest_addr&0xff),(dest_addr>>8)&0xff,(dest_addr>>16)&0xff,(dest_addr>>24)&0xff,dest_port);
         break;
     default:
         break;
     }
-
 }
 static void handle_signal(int signo)
 {
@@ -132,7 +156,7 @@ int detect_processes()
                             printf("Pid: %d| Process Name: %s\n", pid, process_name);
                             process_infos[process_counter].pid = pid;
                             process_infos[process_counter].total_packets = 0;
-                            memcpy(&process_infos[process_counter].process_name,process_name,sizeof(process_infos[process_counter].process_name));
+                            memcpy(&process_infos[process_counter].process_name, process_name, sizeof(process_name));
                             process_counter++;
                             break;
                         }
