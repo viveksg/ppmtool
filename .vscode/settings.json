@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "ppmanalyzer.skel.h": "c",
+        "ppm_common.h": "c"
+    }
+}

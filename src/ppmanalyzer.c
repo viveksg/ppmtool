@@ -36,7 +36,10 @@ typedef struct
     __u32 total_packets;
 } process_info;
 
+__u32 port_process_map[TOTAL_PORTS];
 process_info process_infos[MAX_PROCESSES];
+bool port_process_map_status[TOTAL_PORTS];
+
 int process_counter = 0;
 struct ppmanalyzer_bpf *skel;
 static volatile sig_atomic_t stop;
@@ -104,6 +107,8 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
     case EVENT_NEW_PACKET_DETECTED:
         process_index =  get_process_index(event_data->pid);
         process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
+        if(process_index == -1 && port_process_map_status[event_data->pid])
+                process_index = port_process_map[event_data->pid];
         if(process_index > -1)
             printf("Packet Detected- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
         else
@@ -111,6 +116,10 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
         printf(" Received Packet From: %d.%d.%d.%d:%d | ", (src_addr&0xff),(src_addr>>8)&0xff,(src_addr>>16)&0xff,(src_addr>>24)&0xff,src_port);
         printf(" Received Packet At:   %d.%d.%d.%d:%d  \n ",(dest_addr&0xff),(dest_addr>>8)&0xff,(dest_addr>>16)&0xff,(dest_addr>>24)&0xff,dest_port);
         break;
+    case EVENT_NEW_PACKET_PORT_MAPPED:
+        process_index = get_process_index(event_data->pid);
+        port_process_map[event_data->port_id] = process_index;
+        break;    
     default:
         break;
     }

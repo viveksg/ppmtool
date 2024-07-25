@@ -1,8 +1,4 @@
-#include "vmlinux.h"
-
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
+#include "ppm_helper.h"
 #include "ppm_common.h"
 typedef struct
 {
@@ -52,6 +48,9 @@ struct
     __uint(max_entries,512);
 } process_map SEC(".maps");
 
+
+
+
 SEC("tracepoint/net/netif_receive_skb")
 int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
 {
@@ -86,24 +85,7 @@ int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
 }
 
 
-SEC("kprobe/tcp_v4_connect")
-int kprobe_tcp_v4_connect(struct pt_regs *ctx)
-{
-    u16 family = 0;
-    struct sock *sk;
-    sk = (struct sock *)PT_REGS_PARM1(ctx);
-    bpf_probe_read(&family, sizeof(family), &sk->__sk_common.skc_family);
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_printk("Detect pid: %d\n", pid);
-    perf_ppm_event ppm_event;
-    ppm_event.event_id = EVENT_NEW_PACKET_PORT_TCP;
-    ppm_event.pid = pid;
-    __u16 dport = 0;
-    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
-    ppm_event.port_id = my_htons(dport);
-    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
-    return 0;
-}
+
 
 SEC("tracepoint/sched/sched_process_fork")
 int trace_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
@@ -119,3 +101,68 @@ int trace_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
     return 0;
 }
+
+SEC("kprobe/tcp_v4_connect")
+int kprobe_tcp_v4_connect(struct pt_regs *ctx)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct sock *sk;
+    sk = (struct sock *)PT_REGS_PARM1(ctx);
+    perf_ppm_event ppm_event;
+    ppm_event.pid = pid;
+    ppm_event.event_id = EVENT_NEW_PACKET_PORT_MAPPED;
+    __u16 dport = 0;
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    ppm_event.port_id = my_htons(dport);
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    return 0;
+}
+
+SEC("kprobe/tcp_v6_connect")
+int kprobe_tcp_v6_connect(struct pt_regs *ctx)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct sock *sk;
+    sk = (struct sock *)PT_REGS_PARM1(ctx);
+    perf_ppm_event ppm_event;
+    ppm_event.pid = pid;
+    ppm_event.event_id = EVENT_NEW_PACKET_PORT_MAPPED;
+    __u16 dport = 0;
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    ppm_event.port_id = my_htons(dport);
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    return 0;
+}
+
+SEC("kprobe/udp_sendmsg")
+int kprobe_udp_sendmsg(struct pt_regs *ctx)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct sock *sk;
+    sk = (struct sock *)PT_REGS_PARM1(ctx);
+    perf_ppm_event ppm_event;
+    ppm_event.pid = pid;
+    ppm_event.event_id = EVENT_NEW_PACKET_PORT_MAPPED;
+    __u16 dport = 0;
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    ppm_event.port_id = my_htons(dport);
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    return 0;
+}
+
+SEC("kprobe/udp_recvmsg")
+int kprobe_udp_recmsg(struct pt_regs *ctx)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct sock *sk;
+    sk = (struct sock *)PT_REGS_PARM1(ctx);
+    perf_ppm_event ppm_event;
+    ppm_event.pid = pid;
+    ppm_event.event_id = EVENT_NEW_PACKET_PORT_MAPPED;
+    __u16 dport = 0;
+    bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
+    ppm_event.port_id = my_htons(dport);
+    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    return 0;
+}
+
