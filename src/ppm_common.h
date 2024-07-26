@@ -15,5 +15,11 @@
 #endif
 #define AF_INET 2
 #define AF_INET6 10
+
 #define MAX_STR_LEN 512
+#define MAX_CHRS MAX_STR_LEN
+#define MAX_PROCESSES 1 << 16
+#define TOTAL_PORTS 1 << 16
+#define IPV6_ADDR_BYTE_COUNT 16
+#define COMM_LENGTH
 #endif

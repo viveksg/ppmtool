@@ -16,13 +16,16 @@ typedef struct
 
 typedef struct
 {
+    __u8 ip_version;
     __u32 event_id;
-    __u32 port_id;
     __u32 pid;
     __u32 packet_count;
     __u32 src_addr;
     __u32 dst_addr;
-    __u32 src_port_id;
+    __u16 port_id;
+    __u16 src_port_id;
+    char ipv6_src_addr[IPV6_ADDR_BYTE_COUNT];
+    char ipv6_dst_addr[IPV6_ADDR_BYTE_COUNT];
     char comm[16];
 } perf_ppm_event;
 
@@ -42,50 +45,76 @@ struct
 
 struct
 {
-    __uint(type,BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(key_size,sizeof(u32));
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(key_size, sizeof(u32));
     __uint(value_size, sizeof(process_data));
-    __uint(max_entries,512);
+    __uint(max_entries, 512);
 } process_map SEC(".maps");
-
-
-
 
 SEC("tracepoint/net/netif_receive_skb")
 int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
 {
     struct sk_buff skb;
     struct sock sk;
-    struct iphdr ip_header;
+    __u8 ip_version;
     perf_ppm_event ppm_event;
     bpf_probe_read(&skb, sizeof(skb), ctx->skbaddr);
-    bpf_probe_read(&ip_header, sizeof(struct iphdr), skb.data);
-    ppm_event.src_addr = ip_header.saddr;
-    ppm_event.dst_addr = ip_header.daddr;
-    ppm_event.pid = bpf_get_current_pid_tgid() >> 32;
-    if(ip_header.protocol == IPPROTO_TCP)
+    bpf_probe_read(&ip_version, sizeof(ip_version), (void*)skb.data);
+    ip_version = ip_version >> 4;
+    bool send_event = false;
+    ppm_event.ip_version = ip_version;
+    if (ip_version == IP_VERSION_4)
     {
-       struct tcphdr tcp_header;
-       bpf_probe_read(&tcp_header, sizeof(struct tcphdr), skb.data + sizeof(struct iphdr));
-       ppm_event.src_port_id =  my_htons(tcp_header.source);
-       ppm_event.port_id = my_htons(tcp_header.dest);
+        send_event = true;
+        struct iphdr ip_header;
+        bpf_probe_read(&ip_header, sizeof(struct iphdr), skb.data);
+        ppm_event.src_addr = ip_header.saddr;
+        ppm_event.dst_addr = ip_header.daddr;
+        ppm_event.pid = bpf_get_current_pid_tgid() >> 32;
+        if (ip_header.protocol == IPPROTO_TCP)
+        {
+            struct tcphdr tcp_header;
+            bpf_probe_read(&tcp_header, sizeof(struct tcphdr), skb.data + sizeof(struct iphdr));
+            ppm_event.src_port_id = my_htons(tcp_header.source);
+            ppm_event.port_id = my_htons(tcp_header.dest);
+        }
+        else if (ip_header.protocol == IPPROTO_UDP)
+        {
+            struct udphdr udp_header;
+            bpf_probe_read(&udp_header, sizeof(struct udphdr), skb.data + sizeof(struct iphdr));
+            ppm_event.src_port_id = my_htons(udp_header.source);
+            ppm_event.port_id = my_htons(udp_header.dest);
+        }
     }
-    else if(ip_header.protocol == IPPROTO_UDP)
+    else if (ip_version == IP_VERSION_6)
     {
-       struct udphdr udp_header;
-       bpf_probe_read(&udp_header, sizeof(struct udphdr), skb.data + sizeof(struct iphdr));
-       ppm_event.src_port_id =  my_htons(udp_header.source);
-       ppm_event.port_id = my_htons(udp_header.dest);
+        struct ipv6hdr ip6_header;
+        struct tcphdr tcp_header_ip6;
+        struct udphdr udp_header_ip6;
+        send_event = true;
+        bpf_probe_read(&ip6_header, sizeof(ip6_header), skb.data);
 
+        if (ip6_header.nexthdr == IPPROTO_TCP)
+        {
+            bpf_probe_read(&tcp_header_ip6, sizeof(struct tcphdr), &skb.data + sizeof(struct iphdr));
+            ppm_event.src_port_id = my_htons(tcp_header_ip6.source);
+            ppm_event.port_id = my_htons(tcp_header_ip6.dest);
+        }
+        else if (ip6_header.nexthdr == IPPROTO_UDP)
+        {
+            bpf_probe_read(&udp_header_ip6, sizeof(struct udphdr), &skb.data + sizeof(struct iphdr));
+            ppm_event.src_port_id = my_htons(udp_header_ip6.source);
+            ppm_event.port_id = my_htons(udp_header_ip6.dest);
+        }
     }
-    ppm_event.event_id = EVENT_NEW_PACKET_DETECTED;
-    bpf_get_current_comm(&ppm_event.comm, sizeof(ppm_event.comm));
-    bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    if (send_event)
+    {
+        ppm_event.event_id = EVENT_NEW_PACKET_DETECTED;
+        bpf_get_current_comm(&ppm_event.comm, sizeof(ppm_event.comm));
+        bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    }
     return 0;
 }
-
-
-
 
 SEC("tracepoint/sched/sched_process_fork")
 int trace_sched_process_fork(struct trace_event_raw_sched_process_fork *ctx)
@@ -165,4 +194,3 @@ int kprobe_udp_recmsg(struct pt_regs *ctx)
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
     return 0;
 }
-

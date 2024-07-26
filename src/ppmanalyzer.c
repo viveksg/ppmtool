@@ -13,19 +13,18 @@
 #include <bpf/libbpf.h>
 #include "ppm_common.h"
 #include "ppmanalyzer.skel.h"
-#define MAX_STR_LEN 512
-#define MAX_CHRS MAX_STR_LEN
-#define MAX_PROCESSES 1 << 16
-#define TOTAL_PORTS 1 << 16
 typedef struct
 {
+    __u8 ip_version;
     __u32 event_id;
-    __u32 port_id;
     __u32 pid;
     __u32 packet_count;
     __u32 src_addr;
     __u32 dst_addr;
-    __u32 src_port_id;
+    __u16 port_id;
+    __u16 src_port_id;
+    char ipv6_src_addr[IPV6_ADDR_BYTE_COUNT];
+    char ipv6_dst_addr[IPV6_ADDR_BYTE_COUNT];
     char comm[16];
 } perf_ppm_event_user;
 
@@ -39,7 +38,7 @@ typedef struct
 __u32 port_process_map[TOTAL_PORTS];
 process_info process_infos[MAX_PROCESSES];
 bool port_process_map_status[TOTAL_PORTS];
-
+__u32 unmapped_packets[TOTAL_PORTS];
 int process_counter = 0;
 struct ppmanalyzer_bpf *skel;
 static volatile sig_atomic_t stop;
@@ -85,7 +84,7 @@ int get_process_index(int pid)
             return i;
         }
     }
-    fprintf(stderr, "Cannot with in entry for PID:%d in process array\n", pid);
+    fprintf(stderr, "Cannot find entry for PID:%d in process array\n", pid);
     return -1;
 }
 
@@ -96,9 +95,10 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
     __u32 src_addr = event_data->src_addr;
     __u32 dest_addr = event_data->dst_addr;
     __u16 src_port = event_data->src_port_id;
-    __u16 dest_port = event_data->dst_addr;
+    __u16 dest_port = event_data->port_id;
     int process_index = 0;
     //char pname[MAX_STR_LEN];
+    printf("Event: %d, IP_VERSION: %d portId : %d\n",event_data->event_id,event_data->ip_version,event_data->port_id);
     switch (event_id)
     {
     case EVENT_NEW_PROCESS_CREATED:
@@ -106,19 +106,31 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
         break;
     case EVENT_NEW_PACKET_DETECTED:
         process_index =  get_process_index(event_data->pid);
-        process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
-        if(process_index == -1 && port_process_map_status[event_data->pid])
-                process_index = port_process_map[event_data->pid];
+        if(process_index == -1 && port_process_map_status[event_data->port_id])
+                process_index = port_process_map[event_data->port_id];
         if(process_index > -1)
+        {
+            process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
             printf("Packet Detected- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
+        }
         else
-            printf("Process not founf for pid: %d\n",event_data->pid);
+        {
+            unmapped_packets[event_data->port_id] += 1;
+            printf("Process not found for pid: %d\n",event_data->pid);
+        }
         printf(" Received Packet From: %d.%d.%d.%d:%d | ", (src_addr&0xff),(src_addr>>8)&0xff,(src_addr>>16)&0xff,(src_addr>>24)&0xff,src_port);
         printf(" Received Packet At:   %d.%d.%d.%d:%d  \n ",(dest_addr&0xff),(dest_addr>>8)&0xff,(dest_addr>>16)&0xff,(dest_addr>>24)&0xff,dest_port);
         break;
     case EVENT_NEW_PACKET_PORT_MAPPED:
         process_index = get_process_index(event_data->pid);
         port_process_map[event_data->port_id] = process_index;
+        port_process_map_status[event_data->port_id] = true;
+        if(unmapped_packets[event_data->port_id] > 0)
+        {
+            printf("Including %d received packets in total packet count for pid %d, while its port mapping was not detected.\n",unmapped_packets[event_data->port_id],event_data->pid);
+            process_infos[process_index].total_packets = unmapped_packets[event_data->port_id];
+            unmapped_packets[event_data->port_id] = 0;
+        }
         break;    
     default:
         break;
@@ -186,6 +198,7 @@ int main(int args, char **agrv)
     int err;
     libbpf_set_print(libbpf__print_fn);
     skel = ppmanalyzer_bpf__open_and_load();
+    memset(unmapped_packets,0,sizeof(unmapped_packets));
     // int nprocs = get_nproc();
     bpf_map__set_max_entries(skel->maps.ppm_perf_events, 4);
     if (!skel)
