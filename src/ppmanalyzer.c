@@ -98,7 +98,6 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
     __u16 dest_port = event_data->port_id;
     int process_index = 0;
     //char pname[MAX_STR_LEN];
-    printf("Event: %d, IP_VERSION: %d portId : %d\n",event_data->event_id,event_data->ip_version,event_data->port_id);
     switch (event_id)
     {
     case EVENT_NEW_PROCESS_CREATED:
@@ -111,7 +110,7 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
         if(process_index > -1)
         {
             process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
-            printf("Packet Detected- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
+            printf("Packet Received by- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
         }
         else
         {
@@ -132,6 +131,27 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
             unmapped_packets[event_data->port_id] = 0;
         }
         break;    
+    case EVENT_NEW_PACKET_TRANSMISSION:
+
+        process_index =  get_process_index(event_data->pid);
+        if(process_index == -1 && port_process_map_status[event_data->port_id])
+                process_index = port_process_map[event_data->port_id];
+        if(process_index > -1)
+        {
+            process_infos[process_index].total_packets = process_infos[process_index].total_packets + 1;
+            printf("Packet Sent from- ProcessId: %d| Process_name: %s | Total Packets: %d", event_data->pid, process_infos[process_index].process_name,process_infos[process_index].total_packets);
+        }
+        else
+        {
+            unmapped_packets[event_data->port_id] += 1;
+            printf("Process not found for pid: %d\n",event_data->pid);
+        }
+        printf(" Packet Transmission : %d.%d.%d.%d:%d | ", (src_addr&0xff),(src_addr>>8)&0xff,(src_addr>>16)&0xff,(src_addr>>24)&0xff,src_port);
+        printf(" Sending to:   %d.%d.%d.%d:%d  \n ",(dest_addr&0xff),(dest_addr>>8)&0xff,(dest_addr>>16)&0xff,(dest_addr>>24)&0xff,dest_port);
+        break;
+    case EVENT_PROCESS_DELETED:
+        printf("Process Removed :%d\n", event_data->pid);
+        break;        
     default:
         break;
     }
@@ -238,3 +258,4 @@ cleanup:
     ppmanalyzer_bpf__destroy(skel);
     return -err;
 }
+

@@ -34,6 +34,11 @@ static inline __u16 my_htons(__u16 hostshort)
     return (hostshort << 8) | (hostshort >> 8);
 }
 
+static inline __u32 my_htnos32(__u32 hostval)
+{
+    return (((hostval >> 24)&0xFF) | (((hostval >> 16) & 0xFF) << 8) | (((hostval >> 8) & 0xFF)<<16) | ((hostval &0xFF) << 24)); 
+}
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct
@@ -59,7 +64,7 @@ int netif_receive_skb(struct trace_event_raw_net_dev_template *ctx)
     __u8 ip_version;
     perf_ppm_event ppm_event;
     bpf_probe_read(&skb, sizeof(skb), ctx->skbaddr);
-    bpf_probe_read(&ip_version, sizeof(ip_version), (void*)skb.data);
+    bpf_probe_read(&ip_version, sizeof(ip_version), (void *)skb.data);
     ip_version = ip_version >> 4;
     bool send_event = false;
     ppm_event.ip_version = ip_version;
@@ -192,5 +197,79 @@ int kprobe_udp_recmsg(struct pt_regs *ctx)
     bpf_probe_read_kernel(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
     ppm_event.port_id = my_htons(dport);
     bpf_perf_event_output(ctx, &ppm_perf_events, BPF_F_CURRENT_CPU, &ppm_event, sizeof(ppm_event));
+    return 0;
+}
+
+SEC("tracepoint/net/net_dev_start_xmit")
+int trace_net_dev_start_xmit(struct trace_event_raw_net_dev_template *ctx)
+{
+    struct sk_buff skb;
+    struct ethhdr eth_header;
+    bpf_probe_read_kernel(&skb,sizeof(struct sk_buff),ctx->skbaddr);
+    bpf_probe_read_kernel(&eth_header,sizeof(struct ethhdr), skb.data);
+    __u8 ip_version = 0;
+    if (eth_header.h_proto == my_htons(ETH_P_IP))
+    {
+        __u16 src_port = 0;
+        __u16 dst_port = 0;
+        perf_ppm_event ppm_event;
+        struct tcphdr tcp_header;
+        struct udphdr udp_header;
+        bpf_probe_read(&ip_version, sizeof(ip_version), skb.data + sizeof(struct ethhdr));
+        ip_version = ip_version >> 4;
+        if (ip_version == IP_VERSION_4)
+        { struct iphdr ip_header;
+          bpf_probe_read(&ip_header,sizeof(ip_header),skb.data+sizeof(struct ethhdr));
+          ppm_event.src_addr = ip_header.saddr;
+          ppm_event.dst_addr = ip_header.daddr;
+            if(ip_header.protocol == IPPROTO_TCP)
+            {
+                bpf_probe_read(&tcp_header,sizeof(tcp_header),skb.data+sizeof(struct ethhdr)+sizeof(struct iphdr));
+                src_port = my_htons(tcp_header.source);
+                dst_port = my_htons(tcp_header.dest);
+            }
+            else if(ip_header.protocol == IPPROTO_UDP)
+            {
+                bpf_probe_read(&udp_header,sizeof(udp_header),skb.data+sizeof(struct ethhdr)+sizeof(struct iphdr));
+                src_port = my_htons(udp_header.source);
+                dst_port = my_htons(udp_header.dest);
+            }
+        }
+        else if (ip_version == IP_VERSION_6)
+        {
+            struct ipv6hdr ipv6_header;
+            bpf_probe_read(&ipv6_header,sizeof(ipv6_header),skb.data+sizeof(eth_header));
+            if(ipv6_header.nexthdr== IPPROTO_TCP)
+            {
+                bpf_probe_read(&tcp_header,sizeof(tcp_header),skb.data+sizeof(struct ethhdr)+sizeof(struct ipv6hdr));
+                src_port = my_htons(tcp_header.source);
+                dst_port = my_htons(tcp_header.dest);
+            }
+            else if(ipv6_header.nexthdr == IPPROTO_UDP)
+            {
+                bpf_probe_read(&udp_header,sizeof(udp_header),skb.data+sizeof(struct ethhdr)+sizeof(struct ipv6hdr));
+                src_port = my_htons(udp_header.source);
+                dst_port = my_htons(udp_header.dest);
+            }
+        }
+        ppm_event.src_port_id = src_port;
+        ppm_event.port_id = dst_port;
+        ppm_event.event_id = EVENT_NEW_PACKET_TRANSMISSION;
+        bpf_perf_event_output(ctx,&ppm_perf_events,BPF_F_CURRENT_CPU,&ppm_event,sizeof(ppm_event));
+    }
+
+    return 0;
+}
+
+SEC("tracepoint/sched/sched_process_exit")
+int trace_sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+    perf_ppm_event ppm_event;
+    if(!ctx)
+      return 1;
+    ppm_event.event_id = EVENT_PROCESS_DELETED;
+    ppm_event.pid = ctx->pid;
+    bpf_probe_read(ppm_event.comm,sizeof(ppm_event.comm),ctx->comm);
+    bpf_perf_event_output(ctx,&ppm_perf_events,BPF_F_CURRENT_CPU,&ppm_event,sizeof(ppm_event));  
     return 0;
 }
